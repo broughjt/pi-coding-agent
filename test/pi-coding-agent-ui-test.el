@@ -71,6 +71,79 @@ This ensures all files get code fences for consistent display."
       (when (buffer-live-p buf1)
         (kill-buffer buf1)))))
 
+;;; Chat Buffer Switching
+
+(ert-deftest pi-coding-agent-test-chat-buffer-candidate-p ()
+  "Chat buffer completion predicate accepts only pi chat buffers."
+  (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-candidate/")
+         (chat (pi-coding-agent--get-or-create-buffer :chat dir))
+         (input (pi-coding-agent--get-or-create-buffer :input dir))
+         (ordinary (generate-new-buffer " *pi-coding-agent-test-ordinary*")))
+    (unwind-protect
+        (progn
+          (should (pi-coding-agent--chat-buffer-candidate-p
+                   (buffer-name chat)))
+          (should (pi-coding-agent--chat-buffer-candidate-p
+                   (cons (buffer-name chat) chat)))
+          (should-not (pi-coding-agent--chat-buffer-candidate-p
+                       (buffer-name input)))
+          (should-not (pi-coding-agent--chat-buffer-candidate-p
+                       (buffer-name ordinary))))
+      (pi-coding-agent-test--kill-live-buffers ordinary input chat))))
+
+(ert-deftest pi-coding-agent-test-switch-to-chat-buffer ()
+  "`pi-coding-agent-switch-to-chat-buffer' switches to the selected chat."
+  (let* ((dir "/tmp/pi-coding-agent-test-switch-chat/")
+         (chat (pi-coding-agent--get-or-create-buffer :chat dir))
+         (input (pi-coding-agent--get-or-create-buffer :input dir))
+         (selected nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'read-buffer)
+                   (lambda (_prompt _default require-match predicate)
+                     (should require-match)
+                     (should (funcall predicate (buffer-name chat)))
+                     (should-not (funcall predicate (buffer-name input)))
+                     (setq selected (buffer-name chat)))))
+          (pi-coding-agent-switch-to-chat-buffer)
+          (should (equal selected (buffer-name chat)))
+          (should (eq (current-buffer) chat)))
+      (pi-coding-agent-test--kill-live-buffers input chat))))
+
+(ert-deftest pi-coding-agent-test-switch-to-chat-buffer-errors-when-none ()
+  "`pi-coding-agent-switch-to-chat-buffer' errors when no chat buffers exist."
+  (cl-letf (((symbol-function 'pi-coding-agent--chat-buffers)
+             (lambda () nil)))
+    (should-error (pi-coding-agent-switch-to-chat-buffer) :type 'user-error)))
+
+(ert-deftest pi-coding-agent-test-switch-to-project-chat-buffer ()
+  "`pi-coding-agent-switch-to-project-chat-buffer' offers project chats only."
+  (let* ((root "/tmp/pi-coding-agent-test-switch-project-chat-root/")
+         (other-dir "/tmp/pi-coding-agent-test-switch-project-chat-other/")
+         (root-chat (pi-coding-agent--get-or-create-buffer :chat root))
+         (other-chat (pi-coding-agent--get-or-create-buffer :chat other-dir))
+         (choices nil))
+    (unwind-protect
+        (let ((default-directory root))
+          (cl-letf (((symbol-function 'project-current) (lambda (&rest _) nil))
+                    ((symbol-function 'completing-read)
+                     (lambda (_prompt collection predicate require-match
+                              &rest _args)
+                       (should require-match)
+                       (setq choices (all-completions "" collection predicate))
+                       (buffer-name root-chat))))
+            (pi-coding-agent-switch-to-project-chat-buffer)
+            (should (member (buffer-name root-chat) choices))
+            (should-not (member (buffer-name other-chat) choices))
+            (should (eq (current-buffer) root-chat))))
+      (pi-coding-agent-test--kill-live-buffers other-chat root-chat))))
+
+(ert-deftest pi-coding-agent-test-switch-to-project-chat-buffer-errors-when-none ()
+  "`pi-coding-agent-switch-to-project-chat-buffer' errors without project chats."
+  (cl-letf (((symbol-function 'pi-coding-agent-project-buffers)
+             (lambda () nil)))
+    (should-error (pi-coding-agent-switch-to-project-chat-buffer)
+                  :type 'user-error)))
+
 ;;; Major Modes
 
 (ert-deftest pi-coding-agent-test-chat-mode-is-read-only ()

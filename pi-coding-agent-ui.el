@@ -837,6 +837,54 @@ recency, with the most recent buffer first."
                     target-dir)))))
      (buffer-list))))
 
+(defun pi-coding-agent--chat-buffers ()
+  "Return all live pi chat buffers ordered by `buffer-list' recency."
+  (cl-remove-if-not
+   (lambda (buf)
+     (and (buffer-live-p buf)
+          (with-current-buffer buf
+            (derived-mode-p 'pi-coding-agent-chat-mode))))
+   (buffer-list)))
+
+(defun pi-coding-agent--chat-buffer-candidate-p (candidate)
+  "Return non-nil when CANDIDATE names a pi chat buffer.
+CANDIDATE is in the format passed to the PREDICATE argument of
+`read-buffer': either a buffer name string or a cons whose car is a buffer
+name string."
+  (when-let* ((name (if (consp candidate) (car candidate) candidate))
+              (buf (get-buffer name)))
+    (with-current-buffer buf
+      (derived-mode-p 'pi-coding-agent-chat-mode))))
+
+;;;###autoload
+(defun pi-coding-agent-switch-to-chat-buffer ()
+  "Switch to an open pi chat buffer."
+  (interactive)
+  (let ((buffers (pi-coding-agent--chat-buffers)))
+    (unless buffers
+      (user-error "No pi chat buffers"))
+    (switch-to-buffer
+     (read-buffer "Pi chat buffer: "
+                  (buffer-name (car buffers))
+                  t
+                  #'pi-coding-agent--chat-buffer-candidate-p))))
+
+;;;###autoload
+(defun pi-coding-agent-switch-to-project-chat-buffer ()
+  "Switch to a pi chat buffer for the current project."
+  (interactive)
+  (let* ((buffers (pi-coding-agent-project-buffers))
+         (choices (mapcar #'buffer-name buffers)))
+    (unless choices
+      (user-error "No pi chat buffers for this project"))
+    (switch-to-buffer
+     (completing-read "Project pi chat buffer: "
+                      (lambda (string pred action)
+                        (if (eq action 'metadata)
+                            '(metadata (display-sort-function . identity))
+                          (complete-with-action action choices string pred)))
+                      nil t nil nil (car choices)))))
+
 ;;;; Window Hiding
 
 (defun pi-coding-agent--hide-session-windows ()
