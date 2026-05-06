@@ -545,6 +545,22 @@ This ensures all files get code fences for consistent display."
       (should (eq (pi-coding-agent--get-input-buffer)
                   (get-buffer "*pi-coding-agent-input:/tmp/pi-coding-agent-test-link2/*"))))))
 
+(ert-deftest pi-coding-agent-test-chat-buffer-for-buffer ()
+  "Return the associated chat buffer for chat and input buffers only."
+  (let ((dir "/tmp/pi-coding-agent-test-chat-buffer-for-buffer/")
+        (non-pi (generate-new-buffer " *pi-chat-buffer-for-buffer-non-pi*")))
+    (unwind-protect
+        (pi-coding-agent-test-with-mock-session dir
+          (let ((chat (get-buffer (pi-coding-agent-test--chat-buffer-name dir)))
+                (input (get-buffer (pi-coding-agent-test--input-buffer-name dir))))
+            (should (eq (pi-coding-agent--chat-buffer-for-buffer chat) chat))
+            (should (eq (pi-coding-agent--chat-buffer-for-buffer input) chat))
+            (with-current-buffer input
+              (should (eq (pi-coding-agent--chat-buffer-for-buffer) chat)))
+            (should-not (pi-coding-agent--chat-buffer-for-buffer non-pi))))
+      (when (buffer-live-p non-pi)
+        (kill-buffer non-pi)))))
+
 (ert-deftest pi-coding-agent-test-get-process-from-chat ()
   "Can get process from chat buffer."
   (let ((default-directory "/tmp/pi-coding-agent-test-proc1/")

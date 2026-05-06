@@ -847,16 +847,17 @@ recency, with the most recent buffer first."
             (derived-mode-p 'pi-coding-agent-chat-mode))))
    (buffer-list)))
 
-(defun pi-coding-agent--current-chat-buffer-for-switch ()
-  "Return the current session's chat buffer for switch ordering, or nil.
-When invoked from a pi input buffer, return that input buffer's associated
-chat buffer so the active session is treated like the current buffer."
-  (cond
-   ((derived-mode-p 'pi-coding-agent-chat-mode)
-    (current-buffer))
-   ((derived-mode-p 'pi-coding-agent-input-mode)
-    (and (buffer-live-p pi-coding-agent--chat-buffer)
-         pi-coding-agent--chat-buffer))))
+(defun pi-coding-agent--chat-buffer-for-buffer (&optional buffer)
+  "Return BUFFER's associated live pi chat buffer, or nil.
+BUFFER defaults to the current buffer.  Chat buffers return themselves;
+input buffers return their linked chat buffer."
+  (let ((buffer (or buffer (current-buffer))))
+    (when (buffer-live-p buffer)
+      (with-current-buffer buffer
+        (when (derived-mode-p 'pi-coding-agent-chat-mode
+                              'pi-coding-agent-input-mode)
+          (let ((chat (pi-coding-agent--get-chat-buffer)))
+            (and (buffer-live-p chat) chat)))))))
 
 (defun pi-coding-agent--sort-chat-buffers-for-switch (buffers)
   "Return BUFFERS in visibility/MRU order for chat-buffer switching.
@@ -865,7 +866,7 @@ set of pi chat buffers: non-visible other buffers first, then visible other
 buffers, and the current session's chat buffer last.  Relative order within
 each group is preserved from BUFFERS, which should already be in
 `buffer-list' recency order."
-  (let ((current (pi-coding-agent--current-chat-buffer-for-switch))
+  (let ((current (pi-coding-agent--chat-buffer-for-buffer))
         hidden visible)
     (dolist (buffer buffers)
       (cond
