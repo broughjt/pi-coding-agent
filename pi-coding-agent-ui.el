@@ -918,10 +918,27 @@ recency, with the most recent buffer first."
          (pi-coding-agent--rendered-last-user-message-text))
      60)))
 
+(defun pi-coding-agent--rendered-last-message-time ()
+  "Return the last rendered message timestamp in the current chat buffer.
+The timestamp is parsed from the latest rendered turn heading when possible."
+  (save-excursion
+    (goto-char (point-max))
+    (catch 'time
+      (while (re-search-backward pi-coding-agent--turn-heading-re nil t)
+        (when (pi-coding-agent--at-turn-heading-p)
+          (let ((line (buffer-substring-no-properties
+                       (line-beginning-position) (line-end-position))))
+            (when (string-match " · \\(.*\\)\\'" line)
+              (let ((parsed (ignore-errors
+                              (date-to-time (match-string 1 line)))))
+                (when parsed
+                  (throw 'time parsed))))))))))
+
 (defun pi-coding-agent--chat-buffer-last-message-time (buffer)
   "Return BUFFER's last message time, or nil when unknown."
   (with-current-buffer buffer
-    (pi-coding-agent--last-message-time pi-coding-agent--canonical-messages)))
+    (or (pi-coding-agent--last-message-time pi-coding-agent--canonical-messages)
+        (pi-coding-agent--rendered-last-message-time))))
 
 (defun pi-coding-agent--chat-buffer-choice (buffer)
   "Return a completion choice cons for chat BUFFER."

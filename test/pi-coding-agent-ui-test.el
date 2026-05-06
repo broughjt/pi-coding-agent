@@ -105,9 +105,10 @@ This ensures all files get code fences for consistent display."
         (with-current-buffer chat
           (let ((inhibit-read-only t))
             (erase-buffer)
-            (insert "You\n===\n\nRendered prompt\n\nAssistant\n=========\n\nHi\n"))
+            (insert "You · 2024-01-01 00:00\n====================\n\nRendered prompt\n\nAssistant\n=========\n\nHi\n"))
           (let ((annotation (pi-coding-agent--chat-buffer-annotation chat)))
-            (should (string-match-p "Rendered prompt" annotation))))
+            (should (string-match-p "Rendered prompt" annotation))
+            (should (string-match-p "Jan 01" annotation))))
       (pi-coding-agent-test--kill-live-buffers chat))))
 
 (ert-deftest pi-coding-agent-test-switch-to-chat-buffer ()
