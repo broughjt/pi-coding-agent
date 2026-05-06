@@ -16,6 +16,33 @@
 (require 'pi-coding-agent)
 (require 'pi-coding-agent-test-common)
 
+;;; Session Closing
+
+(ert-deftest pi-coding-agent-test-kill-chat-buffer-closes-selected-session ()
+  "`pi-coding-agent-kill-chat-buffer' closes the selected pi session."
+  (let* ((dir "/tmp/pi-coding-agent-test-kill-chat-buffer/")
+         (chat (pi-coding-agent--get-or-create-buffer :chat dir))
+         (input (pi-coding-agent--get-or-create-buffer :input dir)))
+    (with-current-buffer chat
+      (pi-coding-agent--set-input-buffer input))
+    (with-current-buffer input
+      (pi-coding-agent--set-chat-buffer chat))
+    (cl-letf (((symbol-function 'pi-coding-agent--chat-buffers)
+               (lambda () (list chat)))
+              ((symbol-function 'pi-coding-agent--read-chat-buffer)
+               (lambda (_prompt buffers)
+                 (should (equal buffers (list chat)))
+                 chat)))
+      (pi-coding-agent-kill-chat-buffer)
+      (should-not (buffer-live-p chat))
+      (should-not (buffer-live-p input)))))
+
+(ert-deftest pi-coding-agent-test-kill-chat-buffer-errors-when-none ()
+  "`pi-coding-agent-kill-chat-buffer' errors when no chat buffers exist."
+  (cl-letf (((symbol-function 'pi-coding-agent--chat-buffers)
+             (lambda () nil)))
+    (should-error (pi-coding-agent-kill-chat-buffer) :type 'user-error)))
+
 ;;; Sending Prompts
 
 (ert-deftest pi-coding-agent-test-send-extracts-text ()

@@ -34,7 +34,8 @@
 ;; Key entry points:
 ;;   `pi-coding-agent-send'                  Send prompt (C-c C-c)
 ;;   `pi-coding-agent-abort'                 Abort streaming (C-c C-k)
-;;   `pi-coding-agent-quit'                  Close session
+;;   `pi-coding-agent-quit'                  Close current session
+;;   `pi-coding-agent-kill-chat-buffer'      Close selected session
 ;;   `pi-coding-agent-previous-input'        History backward (M-p)
 ;;   `pi-coding-agent-next-input'            History forward (M-n)
 ;;   `pi-coding-agent-input-previous-message' Navigate previous chat message
@@ -363,6 +364,20 @@ cancels, the session remains intact."
     (dolist (win input-windows)
       (when (window-live-p win)
         (ignore-errors (delete-window win))))))
+
+;;;###autoload
+(defun pi-coding-agent-kill-chat-buffer ()
+  "Close a pi session selected from open chat buffers.
+Like `pi-coding-agent-quit', this kills both the selected chat and input
+buffers and terminates the selected session's process."
+  (interactive)
+  (let ((buffers (pi-coding-agent--chat-buffers)))
+    (unless buffers
+      (user-error "No pi chat buffers"))
+    (when-let* ((chat-buf (pi-coding-agent--read-chat-buffer
+                           "Kill pi chat buffer: " buffers)))
+      (with-current-buffer chat-buf
+        (pi-coding-agent-quit)))))
 
 ;;;; Slash Command Completion
 
