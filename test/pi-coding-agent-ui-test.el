@@ -111,6 +111,47 @@ This ensures all files get code fences for consistent display."
             (should (string-match-p "Jan 01" annotation))))
       (pi-coding-agent-test--kill-live-buffers chat))))
 
+(ert-deftest pi-coding-agent-test-chat-buffer-switch-order-current-last-visible-after-hidden ()
+  "Chat switching order puts hidden other chats, visible chats, then current."
+  (let ((current (generate-new-buffer " *pi-switch-current*"))
+        (visible (generate-new-buffer " *pi-switch-visible*"))
+        (hidden (generate-new-buffer " *pi-switch-hidden*")))
+    (unwind-protect
+        (progn
+          (dolist (buffer (list current visible hidden))
+            (with-current-buffer buffer
+              (pi-coding-agent-chat-mode)))
+          (cl-letf (((symbol-function 'get-buffer-window)
+                     (lambda (buffer &optional _all-frames)
+                       (and (eq buffer visible) t))))
+            (with-current-buffer current
+              (should (equal (pi-coding-agent--sort-chat-buffers-for-switch
+                              (list current visible hidden))
+                             (list hidden visible current))))))
+      (dolist (buffer (list current visible hidden))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+(ert-deftest pi-coding-agent-test-chat-buffer-switch-order-input-session-current-last ()
+  "Chat switching order treats the selected pi input's chat as current."
+  (let ((chat-a (generate-new-buffer " *pi-switch-chat-a*"))
+        (chat-b (generate-new-buffer " *pi-switch-chat-b*"))
+        (input (generate-new-buffer " *pi-switch-input*")))
+    (unwind-protect
+        (progn
+          (dolist (buffer (list chat-a chat-b))
+            (with-current-buffer buffer
+              (pi-coding-agent-chat-mode)))
+          (with-current-buffer input
+            (pi-coding-agent-input-mode)
+            (pi-coding-agent--set-chat-buffer chat-a)
+            (should (equal (pi-coding-agent--sort-chat-buffers-for-switch
+                            (list chat-a chat-b))
+                           (list chat-b chat-a)))))
+      (dolist (buffer (list input chat-a chat-b))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
 (ert-deftest pi-coding-agent-test-switch-to-chat-buffer ()
   "`pi-coding-agent-switch-to-chat-buffer' switches to the selected chat."
   (let* ((dir "/tmp/pi-coding-agent-test-switch-chat/")
@@ -129,6 +170,35 @@ This ensures all files get code fences for consistent display."
           (should (equal choices (list (buffer-name chat))))
           (should (eq (current-buffer) chat)))
       (pi-coding-agent-test--kill-live-buffers chat))))
+
+(ert-deftest pi-coding-agent-test-switch-to-chat-buffer-defaults-to-other-chat ()
+  "`pi-coding-agent-switch-to-chat-buffer' defaults to the MRU other chat."
+  (let ((chat-a (generate-new-buffer " *pi-switch-command-a*"))
+        (chat-b (generate-new-buffer " *pi-switch-command-b*"))
+        choices default)
+    (unwind-protect
+        (progn
+          (dolist (buffer (list chat-a chat-b))
+            (with-current-buffer buffer
+              (pi-coding-agent-chat-mode)))
+          (with-current-buffer chat-a
+            (cl-letf (((symbol-function 'pi-coding-agent--chat-buffers)
+                       (lambda () (list chat-a chat-b)))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt collection predicate require-match
+                                _initial-input _hist def &optional _inherit)
+                         (should require-match)
+                         (setq choices (all-completions "" collection predicate)
+                               default def)
+                         def)))
+              (pi-coding-agent-switch-to-chat-buffer)
+              (should (equal choices (list (buffer-name chat-b)
+                                           (buffer-name chat-a))))
+              (should (equal default (buffer-name chat-b)))
+              (should (eq (current-buffer) chat-b)))))
+      (dolist (buffer (list chat-a chat-b))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest pi-coding-agent-test-switch-to-chat-buffer-errors-when-none ()
   "`pi-coding-agent-switch-to-chat-buffer' errors when no chat buffers exist."
@@ -161,6 +231,35 @@ This ensures all files get code fences for consistent display."
                          choices))
             (should (eq (current-buffer) root-chat))))
       (pi-coding-agent-test--kill-live-buffers other-chat root-chat))))
+
+(ert-deftest pi-coding-agent-test-switch-to-project-chat-buffer-defaults-to-other-chat ()
+  "Project chat switching defaults to the MRU other project chat."
+  (let ((chat-a (generate-new-buffer " *pi-switch-project-command-a*"))
+        (chat-b (generate-new-buffer " *pi-switch-project-command-b*"))
+        choices default)
+    (unwind-protect
+        (progn
+          (dolist (buffer (list chat-a chat-b))
+            (with-current-buffer buffer
+              (pi-coding-agent-chat-mode)))
+          (with-current-buffer chat-a
+            (cl-letf (((symbol-function 'pi-coding-agent-project-buffers)
+                       (lambda () (list chat-a chat-b)))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt collection predicate require-match
+                                _initial-input _hist def &optional _inherit)
+                         (should require-match)
+                         (setq choices (all-completions "" collection predicate)
+                               default def)
+                         def)))
+              (pi-coding-agent-switch-to-project-chat-buffer)
+              (should (equal choices (list (buffer-name chat-b)
+                                           (buffer-name chat-a))))
+              (should (equal default (buffer-name chat-b)))
+              (should (eq (current-buffer) chat-b)))))
+      (dolist (buffer (list chat-a chat-b))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
 
 (ert-deftest pi-coding-agent-test-switch-to-project-chat-buffer-errors-when-none ()
   "`pi-coding-agent-switch-to-project-chat-buffer' errors without project chats."

@@ -847,6 +847,37 @@ recency, with the most recent buffer first."
             (derived-mode-p 'pi-coding-agent-chat-mode))))
    (buffer-list)))
 
+(defun pi-coding-agent--current-chat-buffer-for-switch ()
+  "Return the current session's chat buffer for switch ordering, or nil.
+When invoked from a pi input buffer, return that input buffer's associated
+chat buffer so the active session is treated like the current buffer."
+  (cond
+   ((derived-mode-p 'pi-coding-agent-chat-mode)
+    (current-buffer))
+   ((derived-mode-p 'pi-coding-agent-input-mode)
+    (and (buffer-live-p pi-coding-agent--chat-buffer)
+         pi-coding-agent--chat-buffer))))
+
+(defun pi-coding-agent--sort-chat-buffers-for-switch (buffers)
+  "Return BUFFERS in visibility/MRU order for chat-buffer switching.
+This mirrors the useful part of `consult-buffer' ordering for a restricted
+set of pi chat buffers: non-visible other buffers first, then visible other
+buffers, and the current session's chat buffer last.  Relative order within
+each group is preserved from BUFFERS, which should already be in
+`buffer-list' recency order."
+  (let ((current (pi-coding-agent--current-chat-buffer-for-switch))
+        hidden visible)
+    (dolist (buffer buffers)
+      (cond
+       ((eq buffer current))
+       ((get-buffer-window buffer 'visible)
+        (push buffer visible))
+       (t
+        (push buffer hidden))))
+    (nconc (nreverse hidden)
+           (nreverse visible)
+           (and (memq current buffers) (list current)))))
+
 (defun pi-coding-agent--message-list (messages)
   "Return MESSAGES as a list."
   (cond
@@ -977,7 +1008,8 @@ The timestamp is parsed from the latest rendered turn heading when possible."
 (defun pi-coding-agent-switch-to-chat-buffer ()
   "Switch to an open pi chat buffer."
   (interactive)
-  (let ((buffers (pi-coding-agent--chat-buffers)))
+  (let ((buffers (pi-coding-agent--sort-chat-buffers-for-switch
+                  (pi-coding-agent--chat-buffers))))
     (unless buffers
       (user-error "No pi chat buffers"))
     (switch-to-buffer
@@ -987,7 +1019,8 @@ The timestamp is parsed from the latest rendered turn heading when possible."
 (defun pi-coding-agent-switch-to-project-chat-buffer ()
   "Switch to a pi chat buffer for the current project."
   (interactive)
-  (let ((buffers (pi-coding-agent-project-buffers)))
+  (let ((buffers (pi-coding-agent--sort-chat-buffers-for-switch
+                  (pi-coding-agent-project-buffers))))
     (unless buffers
       (user-error "No pi chat buffers for this project"))
     (switch-to-buffer
