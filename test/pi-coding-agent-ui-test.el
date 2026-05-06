@@ -73,41 +73,61 @@ This ensures all files get code fences for consistent display."
 
 ;;; Chat Buffer Switching
 
-(ert-deftest pi-coding-agent-test-chat-buffer-candidate-p ()
-  "Chat buffer completion predicate accepts only pi chat buffers."
-  (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-candidate/")
+(ert-deftest pi-coding-agent-test-chat-buffer-annotation-includes-preview-time-and-dir ()
+  "Chat buffer annotations include last user message, time, and directory."
+  (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-choice/")
          (chat (pi-coding-agent--get-or-create-buffer :chat dir))
-         (input (pi-coding-agent--get-or-create-buffer :input dir))
-         (ordinary (generate-new-buffer " *pi-coding-agent-test-ordinary*")))
+         (timestamp (floor (* 1000 (float-time (current-time))))))
     (unwind-protect
-        (progn
-          (should (pi-coding-agent--chat-buffer-candidate-p
-                   (buffer-name chat)))
-          (should (pi-coding-agent--chat-buffer-candidate-p
-                   (cons (buffer-name chat) chat)))
-          (should-not (pi-coding-agent--chat-buffer-candidate-p
-                       (buffer-name input)))
-          (should-not (pi-coding-agent--chat-buffer-candidate-p
-                       (buffer-name ordinary))))
-      (pi-coding-agent-test--kill-live-buffers ordinary input chat))))
+        (with-current-buffer chat
+          (pi-coding-agent--set-canonical-messages
+           (vector
+            (list :role "user"
+                  :content "First prompt"
+                  :timestamp (- timestamp 60000))
+            (list :role "assistant"
+                  :content "Response"
+                  :timestamp (- timestamp 30000))
+            (list :role "user"
+                  :content "Last prompt with\nmultiple lines"
+                  :timestamp timestamp)))
+          (let ((annotation (pi-coding-agent--chat-buffer-annotation chat)))
+            (should (string-match-p "just now" annotation))
+            (should (string-match-p "Last prompt with multiple lines" annotation))
+            (should (string-match-p (regexp-quote dir) annotation))))
+      (pi-coding-agent-test--kill-live-buffers chat))))
+
+(ert-deftest pi-coding-agent-test-chat-buffer-annotation-falls-back-to-rendered-user-message ()
+  "Chat buffer annotations use rendered text when canonical messages are missing."
+  (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-rendered-choice/")
+         (chat (pi-coding-agent--get-or-create-buffer :chat dir)))
+    (unwind-protect
+        (with-current-buffer chat
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (insert "You\n===\n\nRendered prompt\n\nAssistant\n=========\n\nHi\n"))
+          (let ((annotation (pi-coding-agent--chat-buffer-annotation chat)))
+            (should (string-match-p "Rendered prompt" annotation))))
+      (pi-coding-agent-test--kill-live-buffers chat))))
 
 (ert-deftest pi-coding-agent-test-switch-to-chat-buffer ()
   "`pi-coding-agent-switch-to-chat-buffer' switches to the selected chat."
   (let* ((dir "/tmp/pi-coding-agent-test-switch-chat/")
          (chat (pi-coding-agent--get-or-create-buffer :chat dir))
-         (input (pi-coding-agent--get-or-create-buffer :input dir))
-         (selected nil))
+         (choices nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'read-buffer)
-                   (lambda (_prompt _default require-match predicate)
+        (cl-letf (((symbol-function 'pi-coding-agent--chat-buffers)
+                   (lambda () (list chat)))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt collection predicate require-match
+                            &rest _args)
                      (should require-match)
-                     (should (funcall predicate (buffer-name chat)))
-                     (should-not (funcall predicate (buffer-name input)))
-                     (setq selected (buffer-name chat)))))
+                     (setq choices (all-completions "" collection predicate))
+                     (car choices))))
           (pi-coding-agent-switch-to-chat-buffer)
-          (should (equal selected (buffer-name chat)))
+          (should (equal choices (list (buffer-name chat))))
           (should (eq (current-buffer) chat)))
-      (pi-coding-agent-test--kill-live-buffers input chat))))
+      (pi-coding-agent-test--kill-live-buffers chat))))
 
 (ert-deftest pi-coding-agent-test-switch-to-chat-buffer-errors-when-none ()
   "`pi-coding-agent-switch-to-chat-buffer' errors when no chat buffers exist."
@@ -130,10 +150,14 @@ This ensures all files get code fences for consistent display."
                               &rest _args)
                        (should require-match)
                        (setq choices (all-completions "" collection predicate))
-                       (buffer-name root-chat))))
+                       (car choices))))
             (pi-coding-agent-switch-to-project-chat-buffer)
-            (should (member (buffer-name root-chat) choices))
-            (should-not (member (buffer-name other-chat) choices))
+            (should (equal choices (list (buffer-name root-chat))))
+            (should-not (cl-some
+                         (lambda (choice)
+                           (string-match-p (regexp-quote (buffer-name other-chat))
+                                           choice))
+                         choices))
             (should (eq (current-buffer) root-chat))))
       (pi-coding-agent-test--kill-live-buffers other-chat root-chat))))
 

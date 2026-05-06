@@ -640,6 +640,7 @@ Project lookup, window toggling, and path completion use this directory even
 when the buffer is also backed by a transcript file elsewhere.")
 
 (defvar pi-coding-agent--chat-buffer)
+(defvar pi-coding-agent--canonical-messages)
 
 (defun pi-coding-agent--chat-session-buffer-name (&optional buffer)
   "Return the stable session buffer name for chat BUFFER.
@@ -846,15 +847,114 @@ recency, with the most recent buffer first."
             (derived-mode-p 'pi-coding-agent-chat-mode))))
    (buffer-list)))
 
-(defun pi-coding-agent--chat-buffer-candidate-p (candidate)
-  "Return non-nil when CANDIDATE names a pi chat buffer.
-CANDIDATE is in the format passed to the PREDICATE argument of
-`read-buffer': either a buffer name string or a cons whose car is a buffer
-name string."
-  (when-let* ((name (if (consp candidate) (car candidate) candidate))
-              (buf (get-buffer name)))
-    (with-current-buffer buf
-      (derived-mode-p 'pi-coding-agent-chat-mode))))
+(defun pi-coding-agent--message-list (messages)
+  "Return MESSAGES as a list."
+  (cond
+   ((vectorp messages) (append messages nil))
+   ((listp messages) messages)
+   (t nil)))
+
+(defun pi-coding-agent--message-text (message)
+  "Return visible text content from MESSAGE, or nil."
+  (let ((content (plist-get message :content)))
+    (cond
+     ((stringp content)
+      (unless (string-empty-p content) content))
+     ((vectorp content)
+      (let ((text (mapconcat
+                   (lambda (block)
+                     (if (equal (plist-get block :type) "text")
+                         (or (plist-get block :text) "")
+                       ""))
+                   content "")))
+        (unless (string-empty-p text) text))))))
+
+(defun pi-coding-agent--last-user-message-text (messages)
+  "Return the last user message text in MESSAGES, or nil."
+  (catch 'text
+    (dolist (message (reverse (pi-coding-agent--message-list messages)))
+      (when (equal (plist-get message :role) "user")
+        (when-let* ((text (pi-coding-agent--message-text message)))
+          (throw 'text text))))))
+
+(defun pi-coding-agent--last-message-time (messages)
+  "Return the last message timestamp in MESSAGES as an Emacs time, or nil."
+  (catch 'time
+    (dolist (message (reverse (pi-coding-agent--message-list messages)))
+      (when-let* ((timestamp (plist-get message :timestamp)))
+        (throw 'time (pi-coding-agent--ms-to-time timestamp))))))
+
+(defun pi-coding-agent--one-line-preview (text max-len)
+  "Return TEXT as a single-line preview no longer than MAX-LEN."
+  (when text
+    (pi-coding-agent--truncate-string
+     (string-trim (replace-regexp-in-string "[[:space:]\n]+" " " text))
+     max-len)))
+
+(defun pi-coding-agent--rendered-last-user-message-text ()
+  "Return the last rendered user message text in the current chat buffer."
+  (save-excursion
+    (goto-char (point-max))
+    (when-let* ((heading (pi-coding-agent--find-you-heading #'re-search-backward)))
+      (goto-char heading)
+      (forward-line 2)
+      (let ((beg (point))
+            (end (or (save-excursion
+                       (while (and (re-search-forward
+                                    pi-coding-agent--turn-heading-re nil t)
+                                   (not (save-excursion
+                                          (goto-char (match-beginning 0))
+                                          (pi-coding-agent--at-turn-heading-p)))))
+                       (and (match-beginning 0)))
+                     (point-max))))
+        (string-trim (buffer-substring-no-properties beg end))))))
+
+(defun pi-coding-agent--chat-buffer-last-user-message-preview (buffer)
+  "Return a one-line preview of BUFFER's last user message, or nil."
+  (with-current-buffer buffer
+    (pi-coding-agent--one-line-preview
+     (or (pi-coding-agent--last-user-message-text
+          pi-coding-agent--canonical-messages)
+         (pi-coding-agent--rendered-last-user-message-text))
+     60)))
+
+(defun pi-coding-agent--chat-buffer-last-message-time (buffer)
+  "Return BUFFER's last message time, or nil when unknown."
+  (with-current-buffer buffer
+    (pi-coding-agent--last-message-time pi-coding-agent--canonical-messages)))
+
+(defun pi-coding-agent--chat-buffer-choice (buffer)
+  "Return a completion choice cons for chat BUFFER."
+  (cons (buffer-name buffer) buffer))
+
+(defun pi-coding-agent--chat-buffer-annotation (buffer)
+  "Return completion annotation text for chat BUFFER."
+  (with-current-buffer buffer
+    (let* ((dir (abbreviate-file-name (pi-coding-agent--chat-session-directory)))
+           (preview (pi-coding-agent--chat-buffer-last-user-message-preview buffer))
+           (time (pi-coding-agent--chat-buffer-last-message-time buffer))
+           (relative-time (and time (pi-coding-agent--format-relative-time time)))
+           (metadata (delq nil (list relative-time preview dir))))
+      (when metadata
+        (concat " " (string-join metadata " · "))))))
+
+(defun pi-coding-agent--read-chat-buffer (prompt buffers)
+  "Read a pi chat buffer from BUFFERS using PROMPT."
+  (let* ((choices (mapcar #'pi-coding-agent--chat-buffer-choice buffers))
+         (choice-names (mapcar #'car choices))
+         (completion-extra-properties
+          (list :annotation-function
+                (lambda (name)
+                  (when-let* ((buffer (cdr (assoc name choices))))
+                    (pi-coding-agent--chat-buffer-annotation buffer)))))
+         (choice (completing-read
+                  prompt
+                  (lambda (string pred action)
+                    (if (eq action 'metadata)
+                        '(metadata (display-sort-function . identity))
+                      (complete-with-action action choice-names string pred)))
+                  nil t nil nil (car choice-names))))
+    (cdr (assoc choice choices))))
 
 ;;;###autoload
 (defun pi-coding-agent-switch-to-chat-buffer ()
@@ -864,26 +964,17 @@ name string."
     (unless buffers
       (user-error "No pi chat buffers"))
     (switch-to-buffer
-     (read-buffer "Pi chat buffer: "
-                  (buffer-name (car buffers))
-                  t
-                  #'pi-coding-agent--chat-buffer-candidate-p))))
+     (pi-coding-agent--read-chat-buffer "Pi chat buffer: " buffers))))
 
 ;;;###autoload
 (defun pi-coding-agent-switch-to-project-chat-buffer ()
   "Switch to a pi chat buffer for the current project."
   (interactive)
-  (let* ((buffers (pi-coding-agent-project-buffers))
-         (choices (mapcar #'buffer-name buffers)))
-    (unless choices
+  (let ((buffers (pi-coding-agent-project-buffers)))
+    (unless buffers
       (user-error "No pi chat buffers for this project"))
     (switch-to-buffer
-     (completing-read "Project pi chat buffer: "
-                      (lambda (string pred action)
-                        (if (eq action 'metadata)
-                            '(metadata (display-sort-function . identity))
-                          (complete-with-action action choices string pred)))
-                      nil t nil nil (car choices)))))
+     (pi-coding-agent--read-chat-buffer "Project pi chat buffer: " buffers))))
 
 ;;;; Window Hiding
 
