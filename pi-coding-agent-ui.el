@@ -975,9 +975,98 @@ The timestamp is parsed from the latest rendered turn heading when possible."
     (or (pi-coding-agent--last-message-time pi-coding-agent--canonical-messages)
         (pi-coding-agent--rendered-last-message-time))))
 
-(defun pi-coding-agent--chat-buffer-choice (buffer)
-  "Return a completion choice cons for chat BUFFER."
-  (cons (buffer-name buffer) buffer))
+(defun pi-coding-agent--chat-buffer-choice-label (buffer)
+  "Return the primary completion label for chat BUFFER."
+  (or (pi-coding-agent--chat-buffer-last-user-message-preview buffer)
+      (buffer-name buffer)))
+
+(defun pi-coding-agent--chat-buffer-choice-directory (buffer)
+  "Return the abbreviated session directory for chat BUFFER."
+  (with-current-buffer buffer
+    (abbreviate-file-name (pi-coding-agent--chat-session-directory))))
+
+(defun pi-coding-agent--chat-buffer-choice-time (buffer)
+  "Return the relative last-message time for chat BUFFER, or nil."
+  (when-let* ((time (pi-coding-agent--chat-buffer-last-message-time buffer)))
+    (pi-coding-agent--format-relative-time time)))
+
+(defun pi-coding-agent--chat-buffer-choices (buffers)
+  "Return completion choices for chat BUFFERS.
+Each choice is (LABEL . PLIST), where PLIST contains the selected
+chat buffer plus annotation fields used by completion affixation."
+  (let ((counts (make-hash-table :test #'equal))
+        base choices)
+    (dolist (buffer buffers)
+      (let ((label (pi-coding-agent--chat-buffer-choice-label buffer)))
+        (push (cons label buffer) base)
+        (puthash label (1+ (gethash label counts 0)) counts)))
+    (dolist (entry (nreverse base))
+      (let* ((label (car entry))
+             (buffer (cdr entry))
+             (unique-label (if (> (gethash label counts 0) 1)
+                               (format "%s (%s)" label (buffer-name buffer))
+                             label)))
+        (push (cons unique-label
+                    (list :buffer buffer
+                          :directory (pi-coding-agent--chat-buffer-choice-directory
+                                      buffer)
+                          :time (pi-coding-agent--chat-buffer-choice-time buffer)))
+              choices)))
+    (nreverse choices)))
+
+(defun pi-coding-agent--chat-buffer-choice-suffix
+    (label choice max-label-width max-directory-width include-directory)
+  "Return aligned completion suffix for LABEL and CHOICE.
+MAX-LABEL-WIDTH and MAX-DIRECTORY-WIDTH are display widths across all
+choices.  INCLUDE-DIRECTORY controls whether the directory column is shown."
+  (let* ((time (plist-get choice :time))
+         (directory (plist-get choice :directory))
+         (label-padding (make-string
+                         (+ 2 (max 0 (- max-label-width (string-width label))))
+                         ?\s))
+         (suffix
+          (cond
+           (include-directory
+            (let ((dir (or directory "")))
+              (concat label-padding
+                      dir
+                      (when time
+                        (concat
+                         (make-string
+                          (+ 2 (max 0 (- max-directory-width
+                                          (string-width dir))))
+                          ?\s)
+                         time)))))
+           (time
+            (concat label-padding time)))))
+    (and suffix (propertize suffix 'face 'shadow))))
+
+(defun pi-coding-agent--chat-buffer-affixation-function
+    (choices include-directory)
+  "Return an affixation function for chat-buffer completion CHOICES.
+When INCLUDE-DIRECTORY is non-nil, show directory and relative time
+columns; otherwise show only relative time after the message preview."
+  (let* ((labels (mapcar #'car choices))
+         (max-label-width (apply #'max 0 (mapcar #'string-width labels)))
+         (max-directory-width
+          (if include-directory
+              (apply #'max 0
+                     (mapcar (lambda (choice)
+                               (string-width
+                                (or (plist-get (cdr choice) :directory) "")))
+                             choices))
+            0)))
+    (lambda (completions)
+      (mapcar
+       (lambda (label)
+         (let ((choice (cdr (assoc label choices))))
+           (list label
+                 ""
+                 (and choice
+                      (pi-coding-agent--chat-buffer-choice-suffix
+                       label choice max-label-width max-directory-width
+                       include-directory)))))
+       completions))))
 
 (defun pi-coding-agent--chat-buffer-annotation (buffer)
   "Return completion annotation text for chat BUFFER."
@@ -990,15 +1079,21 @@ The timestamp is parsed from the latest rendered turn heading when possible."
       (when metadata
         (concat " " (string-join metadata " · "))))))
 
-(defun pi-coding-agent--read-chat-buffer (prompt buffers)
-  "Read a pi chat buffer from BUFFERS using PROMPT."
-  (let* ((choices (mapcar #'pi-coding-agent--chat-buffer-choice buffers))
+(defun pi-coding-agent--read-chat-buffer (prompt buffers &optional omit-directory)
+  "Read a pi chat buffer from BUFFERS using PROMPT.
+When OMIT-DIRECTORY is non-nil, hide the directory column and show only
+the last user message plus relative time."
+  (let* ((include-directory (not omit-directory))
+         (choices (pi-coding-agent--chat-buffer-choices buffers))
          (choice-names (mapcar #'car choices))
+         (affixation-function
+          (pi-coding-agent--chat-buffer-affixation-function
+           choices include-directory))
          (completion-extra-properties
-          (list :annotation-function
+          (list :affixation-function affixation-function
+                :annotation-function
                 (lambda (name)
-                  (when-let* ((buffer (cdr (assoc name choices))))
-                    (pi-coding-agent--chat-buffer-annotation buffer)))))
+                  (nth 2 (car (funcall affixation-function (list name)))))))
          (choice (completing-read
                   prompt
                   (lambda (string pred action)
@@ -1006,7 +1101,7 @@ The timestamp is parsed from the latest rendered turn heading when possible."
                         '(metadata (display-sort-function . identity))
                       (complete-with-action action choice-names string pred)))
                   nil t nil nil (car choice-names))))
-    (cdr (assoc choice choices))))
+    (plist-get (cdr (assoc choice choices)) :buffer)))
 
 ;;;###autoload
 (defun pi-coding-agent-switch-to-chat-buffer ()
@@ -1028,7 +1123,7 @@ The timestamp is parsed from the latest rendered turn heading when possible."
     (unless buffers
       (user-error "No pi chat buffers for this project"))
     (switch-to-buffer
-     (pi-coding-agent--read-chat-buffer "Project pi chat buffer: " buffers))))
+     (pi-coding-agent--read-chat-buffer "Project pi chat buffer: " buffers t))))
 
 ;;;; Window Hiding
 

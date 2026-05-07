@@ -111,6 +111,94 @@ This ensures all files get code fences for consistent display."
             (should (string-match-p "Jan 01" annotation))))
       (pi-coding-agent-test--kill-live-buffers chat))))
 
+(ert-deftest pi-coding-agent-test-read-chat-buffer-affixation-aligns-columns ()
+  "Chat buffer completion shows message, directory, and time columns."
+  (let* ((dir-a "/tmp/pi-coding-agent-test-chat-buffer-columns-a/")
+         (dir-b "/tmp/pi-coding-agent-test-chat-buffer-columns-b/")
+         (chat-a (pi-coding-agent--get-or-create-buffer :chat dir-a))
+         (chat-b (pi-coding-agent--get-or-create-buffer :chat dir-b))
+         (timestamp (floor (* 1000 (float-time (current-time)))))
+         choices affixed)
+    (unwind-protect
+        (progn
+          (with-current-buffer chat-a
+            (pi-coding-agent--set-canonical-messages
+             (vector (list :role "user"
+                           :content "Short prompt"
+                           :timestamp timestamp))))
+          (with-current-buffer chat-b
+            (pi-coding-agent--set-canonical-messages
+             (vector (list :role "user"
+                           :content "A longer prompt"
+                           :timestamp timestamp))))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection predicate require-match
+                              &rest _args)
+                       (should require-match)
+                       (setq choices (all-completions "" collection predicate)
+                             affixed (funcall
+                                      (plist-get completion-extra-properties
+                                                 :affixation-function)
+                                      choices))
+                       (car choices))))
+            (should (eq (pi-coding-agent--read-chat-buffer
+                         "Pi chat buffer: " (list chat-a chat-b))
+                        chat-a)))
+          (should (equal choices '("Short prompt" "A longer prompt")))
+          (let* ((line-a (concat (nth 0 (car affixed))
+                                 (substring-no-properties (nth 2 (car affixed)))))
+                 (line-b (concat (nth 0 (cadr affixed))
+                                 (substring-no-properties (nth 2 (cadr affixed))))))
+            (should (= (string-match-p (regexp-quote dir-a) line-a)
+                       (string-match-p (regexp-quote dir-b) line-b)))
+            (should (= (string-match-p "just now" line-a)
+                       (string-match-p "just now" line-b)))))
+      (pi-coding-agent-test--kill-live-buffers chat-b chat-a))))
+
+(ert-deftest pi-coding-agent-test-read-project-chat-buffer-affixation-omits-directory ()
+  "Project chat completion shows message and time columns only."
+  (let* ((dir-a "/tmp/pi-coding-agent-test-project-chat-columns-a/")
+         (dir-b "/tmp/pi-coding-agent-test-project-chat-columns-b/")
+         (chat-a (pi-coding-agent--get-or-create-buffer :chat dir-a))
+         (chat-b (pi-coding-agent--get-or-create-buffer :chat dir-b))
+         (timestamp (floor (* 1000 (float-time (current-time)))))
+         choices affixed)
+    (unwind-protect
+        (progn
+          (with-current-buffer chat-a
+            (pi-coding-agent--set-canonical-messages
+             (vector (list :role "user"
+                           :content "Short prompt"
+                           :timestamp timestamp))))
+          (with-current-buffer chat-b
+            (pi-coding-agent--set-canonical-messages
+             (vector (list :role "user"
+                           :content "A longer prompt"
+                           :timestamp timestamp))))
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt collection predicate require-match
+                              &rest _args)
+                       (should require-match)
+                       (setq choices (all-completions "" collection predicate)
+                             affixed (funcall
+                                      (plist-get completion-extra-properties
+                                                 :affixation-function)
+                                      choices))
+                       (car choices))))
+            (should (eq (pi-coding-agent--read-chat-buffer
+                         "Project pi chat buffer: " (list chat-a chat-b) t)
+                        chat-a)))
+          (should (equal choices '("Short prompt" "A longer prompt")))
+          (let* ((line-a (concat (nth 0 (car affixed))
+                                 (substring-no-properties (nth 2 (car affixed)))))
+                 (line-b (concat (nth 0 (cadr affixed))
+                                 (substring-no-properties (nth 2 (cadr affixed))))))
+            (should-not (string-match-p (regexp-quote dir-a) line-a))
+            (should-not (string-match-p (regexp-quote dir-b) line-b))
+            (should (= (string-match-p "just now" line-a)
+                       (string-match-p "just now" line-b)))))
+      (pi-coding-agent-test--kill-live-buffers chat-b chat-a))))
+
 (ert-deftest pi-coding-agent-test-chat-buffer-switch-order-current-last-visible-after-hidden ()
   "Chat switching order puts hidden other chats, visible chats, then current."
   (let ((current (generate-new-buffer " *pi-switch-current*"))
