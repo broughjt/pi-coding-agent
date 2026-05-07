@@ -847,7 +847,7 @@ recency, with the most recent buffer first."
             (derived-mode-p 'pi-coding-agent-chat-mode))))
    (buffer-list)))
 
-(defun pi-coding-agent--chat-buffer-for-buffer (&optional buffer)
+(defun pi-coding-agent-chat-buffer-for-buffer (&optional buffer)
   "Return BUFFER's associated live pi chat buffer, or nil.
 BUFFER defaults to the current buffer.  Chat buffers return themselves;
 input buffers return their linked chat buffer."
@@ -859,6 +859,9 @@ input buffers return their linked chat buffer."
           (let ((chat (pi-coding-agent--get-chat-buffer)))
             (and (buffer-live-p chat) chat)))))))
 
+(defalias 'pi-coding-agent--chat-buffer-for-buffer
+  #'pi-coding-agent-chat-buffer-for-buffer)
+
 (defun pi-coding-agent--sort-chat-buffers-for-switch (buffers)
   "Return BUFFERS in visibility/MRU order for chat-buffer switching.
 This mirrors the useful part of `consult-buffer' ordering for a restricted
@@ -866,7 +869,7 @@ set of pi chat buffers: non-visible other buffers first, then visible other
 buffers, and the current session's chat buffer last.  Relative order within
 each group is preserved from BUFFERS, which should already be in
 `buffer-list' recency order."
-  (let ((current (pi-coding-agent--chat-buffer-for-buffer))
+  (let ((current (pi-coding-agent-chat-buffer-for-buffer))
         hidden visible)
     (dolist (buffer buffers)
       (cond

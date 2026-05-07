@@ -553,11 +553,11 @@ This ensures all files get code fences for consistent display."
         (pi-coding-agent-test-with-mock-session dir
           (let ((chat (get-buffer (pi-coding-agent-test--chat-buffer-name dir)))
                 (input (get-buffer (pi-coding-agent-test--input-buffer-name dir))))
-            (should (eq (pi-coding-agent--chat-buffer-for-buffer chat) chat))
-            (should (eq (pi-coding-agent--chat-buffer-for-buffer input) chat))
+            (should (eq (pi-coding-agent-chat-buffer-for-buffer chat) chat))
+            (should (eq (pi-coding-agent-chat-buffer-for-buffer input) chat))
             (with-current-buffer input
-              (should (eq (pi-coding-agent--chat-buffer-for-buffer) chat)))
-            (should-not (pi-coding-agent--chat-buffer-for-buffer non-pi))))
+              (should (eq (pi-coding-agent-chat-buffer-for-buffer) chat)))
+            (should-not (pi-coding-agent-chat-buffer-for-buffer non-pi))))
       (when (buffer-live-p non-pi)
         (kill-buffer non-pi)))))
 
