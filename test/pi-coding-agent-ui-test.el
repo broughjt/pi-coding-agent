@@ -73,8 +73,8 @@ This ensures all files get code fences for consistent display."
 
 ;;; Chat Buffer Switching
 
-(ert-deftest pi-coding-agent-test-chat-buffer-annotation-includes-preview-time-and-dir ()
-  "Chat buffer annotations include last user message, time, and directory."
+(ert-deftest pi-coding-agent-test-chat-buffer-choice-includes-preview-time-and-dir ()
+  "Chat buffer choices include last user message, time, and directory."
   (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-choice/")
          (chat (pi-coding-agent--get-or-create-buffer :chat dir))
          (timestamp (floor (* 1000 (float-time (current-time))))))
@@ -91,14 +91,17 @@ This ensures all files get code fences for consistent display."
             (list :role "user"
                   :content "Last prompt with\nmultiple lines"
                   :timestamp timestamp)))
-          (let ((annotation (pi-coding-agent--chat-buffer-annotation chat)))
-            (should (string-match-p "just now" annotation))
-            (should (string-match-p "Last prompt with multiple lines" annotation))
-            (should (string-match-p (regexp-quote dir) annotation))))
+          (let* ((choice (car (pi-coding-agent--chat-buffer-choices
+                               (list chat))))
+                 (label (car choice))
+                 (metadata (cdr choice)))
+            (should (equal label "Last prompt with multiple lines"))
+            (should (equal (plist-get metadata :time) "just now"))
+            (should (equal (plist-get metadata :directory) dir))))
       (pi-coding-agent-test--kill-live-buffers chat))))
 
-(ert-deftest pi-coding-agent-test-chat-buffer-annotation-falls-back-to-rendered-user-message ()
-  "Chat buffer annotations use rendered text when canonical messages are missing."
+(ert-deftest pi-coding-agent-test-chat-buffer-choice-falls-back-to-rendered-user-message ()
+  "Chat buffer choices use rendered text when canonical messages are missing."
   (let* ((dir "/tmp/pi-coding-agent-test-chat-buffer-rendered-choice/")
          (chat (pi-coding-agent--get-or-create-buffer :chat dir)))
     (unwind-protect
@@ -106,9 +109,12 @@ This ensures all files get code fences for consistent display."
           (let ((inhibit-read-only t))
             (erase-buffer)
             (insert "You · 2024-01-01 00:00\n====================\n\nRendered prompt\n\nAssistant\n=========\n\nHi\n"))
-          (let ((annotation (pi-coding-agent--chat-buffer-annotation chat)))
-            (should (string-match-p "Rendered prompt" annotation))
-            (should (string-match-p "Jan 01" annotation))))
+          (let* ((choice (car (pi-coding-agent--chat-buffer-choices
+                               (list chat))))
+                 (label (car choice))
+                 (metadata (cdr choice)))
+            (should (string-match-p "Rendered prompt" label))
+            (should (equal (plist-get metadata :time) "Jan 01"))))
       (pi-coding-agent-test--kill-live-buffers chat))))
 
 (ert-deftest pi-coding-agent-test-read-chat-buffer-affixation-aligns-columns ()

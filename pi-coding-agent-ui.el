@@ -1068,16 +1068,6 @@ columns; otherwise show only relative time after the message preview."
                        include-directory)))))
        completions))))
 
-(defun pi-coding-agent--chat-buffer-annotation (buffer)
-  "Return completion annotation text for chat BUFFER."
-  (with-current-buffer buffer
-    (let* ((dir (abbreviate-file-name (pi-coding-agent--chat-session-directory)))
-           (preview (pi-coding-agent--chat-buffer-last-user-message-preview buffer))
-           (time (pi-coding-agent--chat-buffer-last-message-time buffer))
-           (relative-time (and time (pi-coding-agent--format-relative-time time)))
-           (metadata (delq nil (list relative-time preview dir))))
-      (when metadata
-        (concat " " (string-join metadata " · "))))))
 
 (defun pi-coding-agent--read-chat-buffer (prompt buffers &optional omit-directory)
   "Read a pi chat buffer from BUFFERS using PROMPT.
