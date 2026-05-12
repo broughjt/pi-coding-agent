@@ -1049,71 +1049,151 @@ replaced by the resumed or forked history."
                            (overlay-get ov 'pi-coding-agent-tool-block))
                          (overlays-in (point-min) (point-max))))))
 
+(defun pi-coding-agent-test--write-session-file (path &optional text)
+  "Write a minimal pi session file to PATH with optional first message TEXT."
+  (with-temp-file path
+    (insert (json-encode '(:type "session" :id "test")) "\n")
+    (when text
+      (insert (json-encode `(:type "message"
+                             :message (:role "user"
+                                       :content [(:type "text" :text ,text)])))
+              "\n"))))
+
+(ert-deftest pi-coding-agent-test-session-list-directory-uses-session-file-parent ()
+  "Session listing uses the current JSONL session file parent directory."
+  (let* ((project-dir (pi-coding-agent-test--make-temp-directory
+                       "pi-coding-agent-project-"))
+         (expected-dir (file-name-as-directory
+                        (expand-file-name "sessions" project-dir))))
+    (unwind-protect
+        (with-temp-buffer
+          (pi-coding-agent-chat-mode)
+          (pi-coding-agent--set-chat-session-identity project-dir)
+          (setq pi-coding-agent--state '(:session-file "sessions/current.jsonl"))
+          (should (equal (pi-coding-agent--session-list-directory (current-buffer))
+                         expected-dir))
+          (setq pi-coding-agent--state '(:session-file ""))
+          (should-not (pi-coding-agent--session-list-directory (current-buffer)))
+          (setq pi-coding-agent--state '(:session-file :json-false))
+          (should-not (pi-coding-agent--session-list-directory (current-buffer))))
+      (delete-directory project-dir t))))
+
+(ert-deftest pi-coding-agent-test-list-sessions-sorted-by-mtime ()
+  "Session files are sorted by modification time, most recent first."
+  (let* ((session-dir (pi-coding-agent-test--make-temp-directory
+                       "pi-coding-agent-sessions-"))
+         (old-file (expand-file-name "2024-01-01_10-00-00.jsonl" session-dir))
+         (new-file (expand-file-name "2024-01-01_09-00-00.jsonl" session-dir)))
+    (unwind-protect
+        (progn
+          (let* ((now (current-time))
+                 (old-time (time-subtract now (seconds-to-time 10)))
+                 (new-time (time-subtract now (seconds-to-time 5))))
+            (pi-coding-agent-test--write-session-file old-file "old")
+            (set-file-times old-file old-time)
+            (pi-coding-agent-test--write-session-file new-file "new")
+            (set-file-times new-file new-time))
+          (let ((sessions (pi-coding-agent--list-sessions session-dir)))
+            (should (equal (length sessions) 2))
+            (should (string-suffix-p "09-00-00.jsonl" (car sessions)))))
+      (delete-directory session-dir t))))
+
+(ert-deftest pi-coding-agent-test-list-sessions-filters-invalid-jsonl-files ()
+  "Session listing ignores JSONL files that are not pi sessions."
+  (let* ((session-dir (pi-coding-agent-test--make-temp-directory
+                       "pi-coding-agent-sessions-"))
+         (session-file (expand-file-name "session.jsonl" session-dir))
+         (other-file (expand-file-name "other.jsonl" session-dir)))
+    (unwind-protect
+        (progn
+          (pi-coding-agent-test--write-session-file session-file "hello")
+          (with-temp-file other-file (insert "{}\n"))
+          (should (equal (pi-coding-agent--list-sessions session-dir)
+                         (list session-file))))
+      (delete-directory session-dir t))))
+
 (ert-deftest pi-coding-agent-test-resume-session-from-input-switches-session-and-rebuilds-history ()
   "Resuming from the input buffer refreshes the linked chat and session state."
-  (let ((dir "/tmp/pi-coding-agent-test-resume-happy/")
-        (shown-message nil)
-        (rpc-calls nil))
-    (pi-coding-agent-test-with-mock-session dir
-      (let* ((chat-buf (get-buffer (pi-coding-agent-test--chat-buffer-name dir)))
-             (input-buf (get-buffer (pi-coding-agent-test--input-buffer-name dir)))
-             (target-session "/tmp/resume-target.jsonl")
-             (messages [(:role "assistant"
-                         :content [(:type "text" :text "Resumed history")]
-                         :timestamp 1704067200000)]))
-        (pi-coding-agent-test--seed-stale-session-rebuild-state
-         chat-buf "STALE RESUME CONTENT")
-        (cl-letf (((symbol-function 'pi-coding-agent--session-directory)
-                   (lambda () dir))
-                  ((symbol-function 'pi-coding-agent--list-sessions)
-                   (lambda (_dir) (list target-session)))
-                  ((symbol-function 'pi-coding-agent--format-session-choice)
-                   (lambda (_path)
-                     (cons "Resume target" target-session)))
-                  ((symbol-function 'completing-read)
-                   (lambda (&rest _) "Resume target"))
-                  ((symbol-function 'pi-coding-agent--rpc-async)
-                   (lambda (_proc cmd cb)
-                     (push (plist-get cmd :type) rpc-calls)
-                     (pcase (plist-get cmd :type)
-                       ("switch_session"
-                        (should (equal (plist-get cmd :sessionPath)
-                                       target-session))
-                        (funcall cb '(:success t :data (:cancelled :false))))
-                       ("get_state"
-                        (funcall cb '(:success t
-                                      :data (:model (:name "resumed-model")
-                                             :thinkingLevel "medium"
-                                             :isStreaming :json-false
-                                             :isCompacting :json-false
-                                             :sessionId "resumed-session-id"
-                                             :sessionFile "/tmp/resumed.jsonl"
-                                             :messageCount 1
-                                             :pendingMessageCount 0))))
-                       ("get_messages"
-                        (funcall cb (list :success t :data (list :messages messages))))
-                       (_
-                        (ert-fail (format "Unexpected RPC during resume test: %S"
-                                          cmd))))))
-                  ((symbol-function 'pi-coding-agent--update-session-name-from-file)
-                   #'ignore)
-                  ((symbol-function 'pi-coding-agent--refresh-header) #'ignore)
-                  ((symbol-function 'message)
-                   (lambda (fmt &rest args)
-                     (setq shown-message (apply #'format fmt args)))))
-          (with-current-buffer input-buf
-            (pi-coding-agent-resume-session)))
-        (with-current-buffer chat-buf
-          (should (equal (plist-get pi-coding-agent--state :session-id)
-                         "resumed-session-id"))
-          (should (equal (plist-get pi-coding-agent--state :session-file)
-                         "/tmp/resumed.jsonl"))
-          (should (string-match-p "Resumed history" (buffer-string))))
-        (pi-coding-agent-test--assert-clean-session-rebuild
-         chat-buf messages "STALE RESUME CONTENT")
-        (should (equal (nreverse rpc-calls)
-                       '("switch_session" "get_state" "get_messages")))
-        (should (equal shown-message "Pi: Resumed session (1 messages)"))))))
+  (let* ((dir (pi-coding-agent-test--make-temp-directory
+               "pi-coding-agent-test-resume-happy-"))
+         (session-dir (pi-coding-agent-test--make-temp-directory
+                       "pi-coding-agent-test-current-sessions-"))
+         (current-session (expand-file-name "current.jsonl" session-dir))
+         (target-session (expand-file-name "target.jsonl" session-dir))
+         (resumed-session (expand-file-name "resumed.jsonl" session-dir))
+         (shown-message nil)
+         (listed-dir nil)
+         (rpc-calls nil))
+    (unwind-protect
+        (pi-coding-agent-test-with-mock-session dir
+          (let* ((chat-buf (get-buffer (pi-coding-agent-test--chat-buffer-name dir)))
+                 (input-buf (get-buffer
+                             (pi-coding-agent-test--input-buffer-name dir)))
+                 (messages [(:role "assistant"
+                             :content [(:type "text" :text "Resumed history")]
+                             :timestamp 1704067200000)]))
+            (pi-coding-agent-test--seed-stale-session-rebuild-state
+             chat-buf "STALE RESUME CONTENT")
+            (with-current-buffer chat-buf
+              (setq pi-coding-agent--state
+                    (plist-put pi-coding-agent--state :session-file
+                               current-session)))
+            (cl-letf (((symbol-function 'pi-coding-agent--list-sessions)
+                       (lambda (session-dir)
+                         (setq listed-dir session-dir)
+                         (list target-session)))
+                      ((symbol-function 'pi-coding-agent--format-session-choice)
+                       (lambda (_path)
+                         (cons "Resume target" target-session)))
+                      ((symbol-function 'completing-read)
+                       (lambda (&rest _) "Resume target"))
+                      ((symbol-function 'pi-coding-agent--rpc-async)
+                       (lambda (_proc cmd cb)
+                         (push (plist-get cmd :type) rpc-calls)
+                         (pcase (plist-get cmd :type)
+                           ("switch_session"
+                            (should (equal (plist-get cmd :sessionPath)
+                                           target-session))
+                            (funcall cb '(:success t :data (:cancelled :false))))
+                           ("get_state"
+                            (funcall cb `(:success t
+                                          :data (:model (:name "resumed-model")
+                                                 :thinkingLevel "medium"
+                                                 :isStreaming :json-false
+                                                 :isCompacting :json-false
+                                                 :sessionId "resumed-session-id"
+                                                 :sessionFile ,resumed-session
+                                                 :messageCount 1
+                                                 :pendingMessageCount 0))))
+                           ("get_messages"
+                            (funcall cb (list :success t
+                                              :data (list :messages messages))))
+                           (_
+                            (ert-fail
+                             (format "Unexpected RPC during resume test: %S"
+                                     cmd))))))
+                      ((symbol-function 'pi-coding-agent--update-session-name-from-file)
+                       #'ignore)
+                      ((symbol-function 'pi-coding-agent--refresh-header) #'ignore)
+                      ((symbol-function 'message)
+                       (lambda (fmt &rest args)
+                         (setq shown-message (apply #'format fmt args)))))
+              (with-current-buffer input-buf
+                (pi-coding-agent-resume-session)))
+            (with-current-buffer chat-buf
+              (should (equal (plist-get pi-coding-agent--state :session-id)
+                             "resumed-session-id"))
+              (should (equal (plist-get pi-coding-agent--state :session-file)
+                             resumed-session))
+              (should (string-match-p "Resumed history" (buffer-string))))
+            (pi-coding-agent-test--assert-clean-session-rebuild
+             chat-buf messages "STALE RESUME CONTENT")
+            (should (equal listed-dir session-dir))
+            (should (equal (nreverse rpc-calls)
+                           '("switch_session" "get_state" "get_messages")))
+            (should (equal shown-message "Pi: Resumed session (1 messages)"))))
+      (delete-directory dir t)
+      (delete-directory session-dir t))))
 
 (ert-deftest pi-coding-agent-test-fork-from-input-switches-session-rebuilds-history-and-prefills-input ()
   "Forking from the input buffer rebuilds chat history and prefills input."
@@ -1191,28 +1271,116 @@ replaced by the resumed or forked history."
 
 (ert-deftest pi-coding-agent-test-resume-session-skips-while-streaming ()
   "Resume refuses to switch sessions while the current chat is busy."
-  (let ((shown-message nil)
-        (listed-sessions nil))
-    (pi-coding-agent-test-with-mock-session "/tmp/pi-coding-agent-test-resume-streaming/"
-      (let ((chat-buf (get-buffer (pi-coding-agent-test--chat-buffer-name
-                                   "/tmp/pi-coding-agent-test-resume-streaming/"))))
-        (with-current-buffer chat-buf
-          (setq pi-coding-agent--status 'streaming))
-        (cl-letf (((symbol-function 'pi-coding-agent--get-process) (lambda () 'mock-proc))
-                  ((symbol-function 'pi-coding-agent--session-directory)
-                   (lambda () "/tmp/pi-coding-agent-test-resume-streaming/"))
-                  ((symbol-function 'pi-coding-agent--list-sessions)
-                   (lambda (_dir)
-                     (setq listed-sessions t)
-                     '("/tmp/pi-coding-agent-test-resume-streaming/session.jsonl")))
-                  ((symbol-function 'message)
-                   (lambda (fmt &rest args)
-                     (setq shown-message (apply #'format fmt args)))))
-          (with-current-buffer chat-buf
-            (pi-coding-agent-resume-session)))))
+  (let* ((dir (pi-coding-agent-test--make-temp-directory
+               "pi-coding-agent-test-resume-streaming-"))
+         (shown-message nil)
+         (listed-sessions nil))
+    (unwind-protect
+        (pi-coding-agent-test-with-mock-session dir
+          (let ((chat-buf (get-buffer
+                           (pi-coding-agent-test--chat-buffer-name dir))))
+            (with-current-buffer chat-buf
+              (setq pi-coding-agent--status 'streaming))
+            (cl-letf (((symbol-function 'pi-coding-agent--get-process)
+                       (lambda () 'mock-proc))
+                      ((symbol-function 'pi-coding-agent--list-sessions)
+                       (lambda (_dir)
+                         (setq listed-sessions t)
+                         (list "session.jsonl")))
+                      ((symbol-function 'message)
+                       (lambda (fmt &rest args)
+                         (setq shown-message (apply #'format fmt args)))))
+              (with-current-buffer chat-buf
+                (pi-coding-agent-resume-session)))))
+      (delete-directory dir t))
     (should-not listed-sessions)
     (should (equal shown-message
                    "Pi: Cannot resume while streaming"))))
+
+(ert-deftest pi-coding-agent-test-resume-session-fetches-missing-session-file ()
+  "Resume asks pi for state before listing sessions when the cache is empty."
+  (let* ((dir (pi-coding-agent-test--make-temp-directory
+               "pi-coding-agent-test-resume-no-state-"))
+         (session-dir (pi-coding-agent-test--make-temp-directory
+                       "pi-coding-agent-test-session-files-"))
+         (session-file (expand-file-name "current.jsonl" session-dir))
+         (shown-message nil)
+         (listed-dir nil)
+         (rpc-calls nil))
+    (unwind-protect
+        (pi-coding-agent-test-with-mock-session dir
+          (let ((chat-buf (get-buffer
+                           (pi-coding-agent-test--chat-buffer-name dir))))
+            (with-current-buffer chat-buf
+              (setq pi-coding-agent--status 'idle
+                    pi-coding-agent--state nil))
+            (cl-letf (((symbol-function 'pi-coding-agent--get-process)
+                       (lambda () 'mock-proc))
+                      ((symbol-function 'pi-coding-agent--rpc-async)
+                       (lambda (_proc cmd cb)
+                         (push (plist-get cmd :type) rpc-calls)
+                         (should (equal (plist-get cmd :type) "get_state"))
+                         (funcall cb `(:success t
+                                       :data (:model (:name "model")
+                                              :thinkingLevel "medium"
+                                              :isStreaming :json-false
+                                              :isCompacting :json-false
+                                              :sessionId "session-id"
+                                              :sessionFile ,session-file
+                                              :messageCount 0
+                                              :pendingMessageCount 0)))))
+                      ((symbol-function 'pi-coding-agent--list-sessions)
+                       (lambda (session-dir)
+                         (setq listed-dir session-dir)
+                         nil))
+                      ((symbol-function 'message)
+                       (lambda (fmt &rest args)
+                         (setq shown-message (apply #'format fmt args)))))
+              (with-current-buffer chat-buf
+                (pi-coding-agent-resume-session)))))
+      (delete-directory dir t)
+      (delete-directory session-dir t))
+    (should (equal listed-dir session-dir))
+    (should (equal (nreverse rpc-calls) '("get_state")))
+    (should (equal shown-message "Pi: No previous sessions found"))))
+
+(ert-deftest pi-coding-agent-test-resume-session-reports-missing-session-file ()
+  "Resume stops clearly when pi state has no session file."
+  (let* ((dir (pi-coding-agent-test--make-temp-directory
+               "pi-coding-agent-test-resume-no-file-"))
+         (shown-message nil)
+         (listed-sessions nil))
+    (unwind-protect
+        (pi-coding-agent-test-with-mock-session dir
+          (let ((chat-buf (get-buffer
+                           (pi-coding-agent-test--chat-buffer-name dir))))
+            (with-current-buffer chat-buf
+              (setq pi-coding-agent--status 'idle
+                    pi-coding-agent--state nil))
+            (cl-letf (((symbol-function 'pi-coding-agent--get-process)
+                       (lambda () 'mock-proc))
+                      ((symbol-function 'pi-coding-agent--rpc-async)
+                       (lambda (_proc _cmd cb)
+                         (funcall cb '(:success t
+                                       :data (:model (:name "model")
+                                              :thinkingLevel "medium"
+                                              :isStreaming :json-false
+                                              :isCompacting :json-false
+                                              :sessionId "session-id"
+                                              :messageCount 0
+                                              :pendingMessageCount 0)))))
+                      ((symbol-function 'pi-coding-agent--list-sessions)
+                       (lambda (_session-dir)
+                         (setq listed-sessions t)
+                         nil))
+                      ((symbol-function 'message)
+                       (lambda (fmt &rest args)
+                         (setq shown-message (apply #'format fmt args)))))
+              (with-current-buffer chat-buf
+                (pi-coding-agent-resume-session)))))
+      (delete-directory dir t))
+    (should-not listed-sessions)
+    (should (equal shown-message "Pi: Session file not available"))))
 
 (ert-deftest pi-coding-agent-test-fork-waits-for-local-user-echo ()
   "Fork refuses to switch sessions while a local prompt is awaiting echo."

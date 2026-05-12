@@ -189,14 +189,36 @@ from either chat or input buffer."
                              (message "Pi: New session started"))
                          (message "Pi: New session cancelled")))))))
 
-(defun pi-coding-agent--session-dir-name (dir)
-  "Convert DIR to session directory name.
-Matches pi's encoding: --path-with-dashes--.
-Note: Handles both Unix and Windows path separators."
-  (let* ((clean-dir (directory-file-name dir))  ; Remove trailing slash
-         (safe-path (replace-regexp-in-string "[/\\\\:]" "-"
-                                              (replace-regexp-in-string "^[/\\\\]" "" clean-dir))))
-    (concat "--" safe-path "--")))
+(defun pi-coding-agent--session-list-directory (&optional chat-buf)
+  "Return the directory containing CHAT-BUF's current JSONL session file.
+Return nil when the current state has no usable session file.  Relative
+session file names are resolved from the chat buffer's stable session
+directory."
+  (let ((chat-buf (or chat-buf (pi-coding-agent--get-chat-buffer))))
+    (when (and chat-buf (buffer-live-p chat-buf))
+      (with-current-buffer chat-buf
+        (when-let* ((session-file (plist-get pi-coding-agent--state
+                                             :session-file))
+                    ((stringp session-file))
+                    ((not (string-empty-p session-file))))
+          (file-name-directory
+           (expand-file-name session-file
+                             (pi-coding-agent--chat-session-directory
+                              chat-buf))))))))
+
+(defun pi-coding-agent--with-session-list-directory (proc chat-buf callback)
+  "Call CALLBACK with the session list directory for CHAT-BUF.
+When cached state has no session file, fetch fresh state from PROC first."
+  (if-let* ((session-dir (pi-coding-agent--session-list-directory chat-buf)))
+      (funcall callback session-dir)
+    (pi-coding-agent--rpc-async proc '(:type "get_state")
+      (lambda (response)
+        (when (and (plist-get response :success)
+                   (buffer-live-p chat-buf))
+          (pi-coding-agent--apply-state-response chat-buf response))
+        (when (buffer-live-p chat-buf)
+          (funcall callback
+                   (pi-coding-agent--session-list-directory chat-buf)))))))
 
 (defun pi-coding-agent--session-metadata (path)
   "Extract metadata from session file PATH.
@@ -251,43 +273,43 @@ Call this from the chat buffer after switching or loading a session."
     (let ((metadata (pi-coding-agent--session-metadata session-file)))
       (setq pi-coding-agent--session-name (plist-get metadata :session-name)))))
 
-(defun pi-coding-agent--list-sessions (dir)
-  "List available session files for project DIR.
-Returns list of absolute paths to .jsonl files, sorted by modification
-time with most recently used first."
-  (let* ((sessions-base (expand-file-name "~/.pi/agent/sessions/"))
-         (session-dir (expand-file-name (pi-coding-agent--session-dir-name dir) sessions-base)))
-    (when (file-directory-p session-dir)
-      ;; Sort by modification time descending (most recently used first)
-      (sort (directory-files session-dir t "\\.jsonl$")
+(defun pi-coding-agent--list-sessions (session-dir)
+  "List valid session files in SESSION-DIR.
+Returns absolute paths to JSONL pi sessions, sorted by modification time with
+most recently used first."
+  (when (and session-dir (file-directory-p session-dir))
+    (let ((sessions (delq nil
+                          (mapcar (lambda (path)
+                                    (and (pi-coding-agent--session-metadata path)
+                                         path))
+                                  (directory-files session-dir t
+                                                   "\\.jsonl\\'")))))
+      (sort sessions
             (lambda (a b)
-              (time-less-p (file-attribute-modification-time (file-attributes b))
-                           (file-attribute-modification-time (file-attributes a))))))))
+              (time-less-p (file-attribute-modification-time
+                            (file-attributes b))
+                           (file-attribute-modification-time
+                            (file-attributes a))))))))
 
 (defun pi-coding-agent--format-session-choice (path)
   "Format session PATH for display in selector.
-Returns (display-string . path) for `completing-read'.
-Prefers session name over first message when available."
-  (let ((metadata (pi-coding-agent--session-metadata path)))
-    (if metadata
-        (let* ((modified-time (plist-get metadata :modified-time))
-               (session-name (plist-get metadata :session-name))
-               (first-msg (plist-get metadata :first-message))
-               (msg-count (plist-get metadata :message-count))
-               (relative-time (pi-coding-agent--format-relative-time modified-time))
-               ;; Prefer session name, fall back to first message preview
-               (label (cond
-                       (session-name (pi-coding-agent--truncate-string session-name 50))
-                       (first-msg (pi-coding-agent--truncate-string first-msg 50))
-                       (t nil)))
-               (display (if label
-                            (format "%s · %s (%d msgs)"
-                                    label relative-time msg-count)
-                          (format "[empty session] · %s" relative-time))))
-          (cons display path))
-      ;; Fallback to filename if metadata extraction fails
-      (let ((filename (file-name-nondirectory path)))
-        (cons filename path)))))
+Returns (display-string . path) for `completing-read', or nil when PATH is not
+a valid pi session.  Prefers session name over first message when available."
+  (when-let* ((metadata (pi-coding-agent--session-metadata path)))
+    (let* ((modified-time (plist-get metadata :modified-time))
+           (session-name (plist-get metadata :session-name))
+           (first-msg (plist-get metadata :first-message))
+           (msg-count (plist-get metadata :message-count))
+           (relative-time (pi-coding-agent--format-relative-time modified-time))
+           (label (cond
+                   (session-name (pi-coding-agent--truncate-string session-name 50))
+                   (first-msg (pi-coding-agent--truncate-string first-msg 50))
+                   (t nil)))
+           (display (if label
+                        (format "%s · %s (%d msgs)"
+                                label relative-time msg-count)
+                      (format "[empty session] · %s" relative-time))))
+      (cons display path))))
 
 (defun pi-coding-agent--reset-session-state ()
   "Reset all session-specific state for a new session.
@@ -465,43 +487,65 @@ chat buffer from session history."
                  (message "Pi: Failed to reload - %s"
                           (or (plist-get response :error) "unknown error"))))))))))))
 
-(defun pi-coding-agent-resume-session ()
-  "Resume a previous pi session from the current project."
-  (interactive)
-  (when-let* ((proc (pi-coding-agent--get-process))
-              (dir (pi-coding-agent--session-directory))
-              (chat-buf (pi-coding-agent--get-chat-buffer)))
-    (when (pi-coding-agent--session-transition-ready-p chat-buf "resume")
-      (let ((sessions (pi-coding-agent--list-sessions dir)))
-        (if (null sessions)
+(defun pi-coding-agent--resume-selected-session (proc chat-buf selected-path)
+  "Resume SELECTED-PATH using PROC and rebuild CHAT-BUF from its history."
+  (pi-coding-agent--rpc-async
+   proc
+   (list :type "switch_session" :sessionPath selected-path)
+   (lambda (response)
+     (let* ((data (plist-get response :data))
+            (cancelled (plist-get data :cancelled)))
+       (if (and (plist-get response :success)
+                (pi-coding-agent--json-false-p cancelled))
+           (progn
+             (pi-coding-agent--refresh-session-state proc chat-buf selected-path)
+             (pi-coding-agent--load-session-history
+              proc
+              (lambda (count)
+                (message "Pi: Resumed session (%d messages)" count))
+              chat-buf))
+         (message "Pi: Failed to resume session"))))))
+
+(defun pi-coding-agent--resume-session-from-directory (proc chat-buf session-dir)
+  "Prompt for a session from SESSION-DIR, then resume it using PROC.
+CHAT-BUF is rebuilt from the selected session history."
+  (let ((sessions (pi-coding-agent--list-sessions session-dir)))
+    (if (null sessions)
+        (message "Pi: No previous sessions found")
+      (let* ((choices (delq nil
+                            (mapcar #'pi-coding-agent--format-session-choice
+                                    sessions)))
+             (choice-strings (mapcar #'car choices)))
+        (if (null choices)
             (message "Pi: No previous sessions found")
-          (let* ((choices (mapcar #'pi-coding-agent--format-session-choice sessions))
-                 (choice-strings (mapcar #'car choices))
-                 (choice (completing-read "Resume session: "
-                                          (lambda (string pred action)
-                                            (if (eq action 'metadata)
-                                                '(metadata (display-sort-function . identity))
-                                              (complete-with-action action choice-strings string pred)))
-                                          nil t))
+          (let* ((choice (completing-read
+                          "Resume session: "
+                          (lambda (string pred action)
+                            (if (eq action 'metadata)
+                                '(metadata (display-sort-function . identity))
+                              (complete-with-action action choice-strings
+                                                    string pred)))
+                          nil t))
                  (selected-path (cdr (assoc choice choices))))
             (when selected-path
-              (pi-coding-agent--rpc-async
-               proc
-               (list :type "switch_session" :sessionPath selected-path)
-               (lambda (response)
-                 (let* ((data (plist-get response :data))
-                        (cancelled (plist-get data :cancelled)))
-                   (if (and (plist-get response :success)
-                            (pi-coding-agent--json-false-p cancelled))
-                       (progn
-                         (pi-coding-agent--refresh-session-state
-                          proc chat-buf selected-path)
-                         (pi-coding-agent--load-session-history
-                          proc
-                          (lambda (count)
-                            (message "Pi: Resumed session (%d messages)" count))
-                          chat-buf))
-                     (message "Pi: Failed to resume session"))))))))))))
+              (pi-coding-agent--resume-selected-session
+               proc chat-buf selected-path))))))))
+
+(defun pi-coding-agent-resume-session ()
+  "Resume a previous pi session stored beside the current session file."
+  (interactive)
+  (when-let* ((proc (pi-coding-agent--get-process))
+              (chat-buf (pi-coding-agent--get-chat-buffer)))
+    (when (pi-coding-agent--session-transition-ready-p chat-buf "resume")
+      (pi-coding-agent--with-session-list-directory
+       proc chat-buf
+       (lambda (session-dir)
+         (cond
+          ((not session-dir)
+           (message "Pi: Session file not available"))
+          ((pi-coding-agent--session-transition-ready-p chat-buf "resume")
+           (pi-coding-agent--resume-session-from-directory
+            proc chat-buf session-dir))))))))
 
 ;;;; Model and Thinking
 
